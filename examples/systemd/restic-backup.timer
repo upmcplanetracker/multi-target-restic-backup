@@ -1,0 +1,16 @@
+[Unit]
+Description=Run restic-backup.service daily
+
+[Timer]
+# Adjust to taste. See `man systemd.time` for OnCalendar syntax.
+OnCalendar=*-*-* 03:00:00
+# If the machine was off/asleep at the scheduled time, run as soon as
+# possible after boot instead of skipping the day entirely.
+Persistent=true
+# Spread actual start time up to 10 minutes after OnCalendar, to avoid
+# every machine on a network hitting a shared NAS/S3 endpoint at the
+# exact same second.
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
