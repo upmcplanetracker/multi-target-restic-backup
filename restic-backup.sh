@@ -2,11 +2,54 @@
 
 set -euo pipefail
 
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "ERROR: must run as root (needed to preserve ownership/ACLs on the backup source)" >&2
+    exit 1
+fi
+
+assert_safe_to_source() {
+    local path="$1"
+
+    if [[ -L "${path}" ]]; then
+        printf 'is a symlink -- refusing to source it (possible tampering)'
+        return 1
+    fi
+
+    local owner_uid
+    owner_uid="$(stat -c '%u' "${path}" 2>/dev/null)" || {
+        printf 'could not stat file'
+        return 1
+    }
+    if [[ "${owner_uid}" -ne 0 ]]; then
+        printf 'not owned by root (uid %s) -- run: chown root:root %q && chmod 600 %q' "${owner_uid}" "${path}" "${path}"
+        return 1
+    fi
+
+    local perms
+    perms="$(stat -c '%a' "${path}" 2>/dev/null)" || {
+        printf 'could not stat permissions'
+        return 1
+    }
+    local group_bit="${perms: -2:1}"
+    local other_bit="${perms: -1:1}"
+    if (( (group_bit & 2) != 0 || (other_bit & 2) != 0 )); then
+        printf 'is group- or other-writable (mode %s) -- run: chmod 600 %q' "${perms}" "${path}"
+        return 1
+    fi
+
+    return 0
+}
+
 CONFIG_FILE="${1:-${RESTIC_BACKUP_CONFIG:-/etc/restic-backup.env}}"
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "ERROR: config file not found: ${CONFIG_FILE}" >&2
     echo "Copy .env.example to ${CONFIG_FILE} (or pass a path as the first argument, or set RESTIC_BACKUP_CONFIG) and edit it." >&2
+    exit 1
+fi
+
+if ! reason="$(assert_safe_to_source "${CONFIG_FILE}")"; then
+    echo "ERROR: ${CONFIG_FILE} ${reason}" >&2
     exit 1
 fi
 
@@ -104,10 +147,6 @@ EOF
 }
 trap 'on_unexpected_error "${LINENO}" "${BASH_COMMAND}"' ERR
 
-if [[ "${EUID}" -ne 0 ]]; then
-    fail "must run as root (needed to preserve ownership/ACLs on ${BACKUP_SOURCE})"
-fi
-
 if [[ ! -x "${RESTIC_BIN}" ]]; then
     fail "restic binary not found. Install it first -- see README.md"
 fi
@@ -124,12 +163,19 @@ if [[ ! -f "${EXCLUDE_FILE}" ]]; then
     fail "exclude file missing: ${EXCLUDE_FILE}"
 fi
 
+if [[ ! "${KEEP_DAILY}" =~ ^[1-9][0-9]*$ ]]; then
+    fail "KEEP_DAILY must be a positive integer, got: '${KEEP_DAILY}'"
+fi
+
 mkdir -p "$(dirname "${LOG_FILE}")"
 mkdir -p "${LOCAL_REPO}"
 mkdir -p "${LOCAL_TMP}"
 export TMPDIR="${LOCAL_TMP}"
 
 mkdir -p "$(dirname "${LOCK_FILE}")"
+if [[ -L "${LOCK_FILE}" ]]; then
+    fail "${LOCK_FILE} is a symlink -- refusing to open it (possible tampering; this file gets truncated/created as root)"
+fi
 exec 200>"${LOCK_FILE}"
 if ! flock -n 200; then
     fail "another backup run is already in progress (lock: ${LOCK_FILE})"
@@ -224,6 +270,11 @@ module_copy_target() (
                 log "[${name}] ERROR: credentials file missing: ${env_file}"
                 return 1
             fi
+            local reason
+            if ! reason="$(assert_safe_to_source "${env_file}")"; then
+                log "[${name}] ERROR: ${env_file} ${reason}"
+                return 1
+            fi
             # shellcheck disable=SC1090
             if ! source "${env_file}"; then
                 log "[${name}] ERROR: failed to source credentials file ${env_file}"
@@ -284,7 +335,6 @@ module_integrity_check() (
     return 0
 )
 
-
 if module_local_backup; then
     MODULE_SUMMARY+=("local: OK")
 else
@@ -308,7 +358,6 @@ else
     FAILURES+=("local repository integrity check")
 fi
 
-# ---- Wrap-up ----------------------------------------------------------------------
 log "===== Module summary ====="
 for line in "${MODULE_SUMMARY[@]}"; do
     log "  ${line}"
@@ -330,7 +379,7 @@ ${summary_text}
 Time: $(date '+%Y-%m-%d %H:%M:%S')
 
 --- last 60 log lines ---
-$(tail -n 60 "${LOG_FILE}")
+$(tail -n 60 "${LOG_FILE}" 2>/dev/null || echo '(log unavailable)')
 EOF
 )"
     send_email "FAILED (${#FAILURES[@]} of ${#MODULE_SUMMARY[@]} steps)" "${failure_body}"
