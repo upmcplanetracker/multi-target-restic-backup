@@ -18,7 +18,7 @@ Requirements
 ------------
 
 *   Linux with bash (developed/tested on Ubuntu; should work on any modern distro with the tools below)
-*   [restic](https://restic.net/) (`apt install restic` or see restic's own install docs for other distros/methods)
+*   [restic](https://restic.net/) (`sudo apt install restic` or see restic's own install docs for other distros/methods)
 *   `flock` (part of `util-linux`, present by default on virtually all Linux systems)
 *   Root privileges to run the script (needed to preserve file ownership, ACLs, and extended attributes on the backup source)
 *   _Optional, for failure emails:_ a `mail`\-providing package (e.g. `mailutils` on Debian/Ubuntu) and a working local mail transport agent such as `postfix` configured to relay outbound mail. Setting up mail delivery itself is outside the scope of this script -- there are plenty of good guides for configuring postfix as a relay-only MTA; search for "postfix satellite system" or your distro's mail-server documentation. This script just calls `mail` if `MAIL_TO` is set and the binary exists; if mail isn't configured, it logs a warning and continues normally.
@@ -58,157 +58,41 @@ Configuration reference
 
 All configuration lives in a single sourced `.env`\-style file. See [`.env.example`](.env.example) for a fully commented template. Summary:
 
-Variable
-
-Required
-
-Description
-
-`BACKUP_SOURCE`
-
-yes
-
-Directory to back up
-
-`LOCAL_REPO`
-
-yes
-
-Path to the local restic repository
-
-`LOCAL_TMP`
-
-yes
-
-Scratch directory for restic
-
-`LOCAL_PASSWORD_FILE`
-
-yes
-
-File containing the local repo's password
-
-`EXCLUDE_FILE`
-
-yes
-
-Restic exclude-patterns file
-
-`LOCK_FILE`
-
-no (default `/var/run/restic-backup.lock`)
-
-Prevents overlapping runs
-
-`LOG_FILE`
-
-no (default `/var/log/restic-backup.log`)
-
-Log output path
-
-`KEEP_DAILY`
-
-no (default `7`)
-
-Daily snapshots to retain, per repo
-
-`RESTIC_TAG`
-
-no (default `daily`)
-
-Tag applied to snapshots
-
-`RESTIC_HOST`
-
-no (default: machine hostname)
-
-`--host` value passed to restic
-
-`ENABLED_TARGETS`
-
-no
-
-Space-separated target names to run
-
-`MAIL_TO`
-
-no
-
-Failure-email recipient; leave unset to disable email entirely
-
-`MAIL_SUBJECT_TAG`
-
-no (default `[restic-backup]`)
-
-Email subject prefix
+| Variable | Required | Description |
+|---|---|---|
+| `BACKUP_SOURCE` | yes | Directory to back up |
+| `LOCAL_REPO` | yes | Path to the local restic repository |
+| `LOCAL_TMP` | yes | Scratch directory for restic |
+| `LOCAL_PASSWORD_FILE` | yes | File containing the local repo's password |
+| `EXCLUDE_FILE` | yes | Restic exclude-patterns file |
+| `LOCK_FILE` | no (default `/var/run/restic-backup.lock`) | Prevents overlapping runs |
+| `LOG_FILE` | no (default `/var/log/restic-backup.log`) | Log output path |
+| `KEEP_DAILY` | no (default `7`) | Daily snapshots to retain, per repo |
+| `RESTIC_TAG` | no (default `daily`) | Tag applied to snapshots |
+| `RESTIC_HOST` | no (default: machine hostname) | `--host` value passed to restic |
+| `ENABLED_TARGETS` | no | Space-separated target names to run |
+| `MAIL_TO` | no | Failure-email recipient; leave unset to disable email entirely |
+| `MAIL_SUBJECT_TAG` | no (default `[restic-backup]`) | Email subject prefix |
 
 ### Targets
 
 Each name in `ENABLED_TARGETS` needs a matching `TARGET_<NAME>_*` block (name uppercased). Two types are supported:
 
-**`path`** -- another restic repo reachable via a local filesystem path: a NAS share, a second local disk, another machine's disk exposed over NFS/CIFS, etc.
-
-Variable
-
-Required
-
-Description
-
-`TARGET_<NAME>_TYPE`
-
-yes
-
-`path`
-
-`TARGET_<NAME>_REPO`
-
-yes
-
-Filesystem path to the target repo
-
-`TARGET_<NAME>_PASSWORD_FILE`
-
-yes
-
-Password file for this repo
-
-`TARGET_<NAME>_MOUNTPOINT`
-
-no
-
-If set, verified mounted (`mountpoint -q`) before use
+| Variable | Required | Description |
+|---|---|---|
+| `TARGET_<NAME>_TYPE` | yes | `path` |
+| `TARGET_<NAME>_REPO` | yes | Filesystem path to the target repo |
+| `TARGET_<NAME>_PASSWORD_FILE` | yes | Password file for this repo |
+| `TARGET_<NAME>_MOUNTPOINT` | no | If set, verified mounted (`mountpoint -q`) before use |
 
 **`s3`** -- an S3-compatible object store (Backblaze B2, AWS S3, MinIO, Wasabi, ...).
 
-Variable
-
-Required
-
-Description
-
-`TARGET_<NAME>_TYPE`
-
-yes
-
-`s3`
-
-`TARGET_<NAME>_REPO`
-
-yes
-
-Restic `s3:...` repository URL
-
-`TARGET_<NAME>_PASSWORD_FILE`
-
-yes
-
-Password file for this repo
-
-`TARGET_<NAME>_ENV_FILE`
-
-yes
-
-File exporting `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+| Variable | Required | Description |
+|---|---|---|
+| `TARGET_<NAME>_TYPE` | yes | `s3` |
+| `TARGET_<NAME>_REPO` | yes | Restic `s3:...` repository URL |
+| `TARGET_<NAME>_PASSWORD_FILE` | yes | Password file for this repo |
+| `TARGET_<NAME>_ENV_FILE` | yes | File exporting `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` |
 
 Target names may only contain letters, digits, and underscores (they're used to build variable names internally).
 
