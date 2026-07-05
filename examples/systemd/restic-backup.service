@@ -1,0 +1,15 @@
+[Unit]
+Description=restic-backup: run restic-backup.sh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust the path if you installed the script elsewhere.
+ExecStart=/usr/local/sbin/restic-backup.sh
+# Uncomment and set if your config lives somewhere other than the
+# script's default (/etc/restic-backup.env):
+# Environment=RESTIC_BACKUP_CONFIG=/etc/restic-backup.env
+
+# Must run as root to preserve ownership/ACLs on the backup source.
+User=root
