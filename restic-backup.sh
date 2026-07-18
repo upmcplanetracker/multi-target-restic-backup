@@ -15,6 +15,11 @@ assert_safe_to_source() {
         return 1
     fi
 
+    if [[ ! -f "${path}" ]]; then
+        printf 'not a regular file'
+        return 1
+    fi
+
     local owner_uid
     owner_uid="$(stat -c '%u' "${path}" 2>/dev/null)" || {
         printf 'could not stat file'
@@ -38,6 +43,15 @@ assert_safe_to_source() {
     fi
 
     return 0
+}
+
+assert_safe_password_file() {
+    local path="$1"
+    local label="$2"
+
+    if ! reason="$(assert_safe_to_source "${path}")"; then
+        fail "${label} password file ${path} ${reason}"
+    fi
 }
 
 CONFIG_FILE="${1:-${RESTIC_BACKUP_CONFIG:-/etc/restic-backup.env}}"
@@ -81,6 +95,7 @@ readonly MAIL_BIN="$(command -v mail || echo /usr/bin/mail)"
 
 export RESTIC_REPOSITORY="${LOCAL_REPO}"
 export RESTIC_PASSWORD_FILE="${LOCAL_PASSWORD_FILE}"
+export TMPDIR="${LOCAL_TMP}"
 
 declare -a FAILURES=()
 declare -a MODULE_SUMMARY=()
@@ -89,7 +104,7 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}" || true
 }
 
-send_email() {
+send_email() (
     local subject="$1"
     local body="$2"
 
@@ -106,7 +121,7 @@ send_email() {
     if ! printf '%s\n' "${body}" | "${MAIL_BIN}" -s "${MAIL_SUBJECT_TAG} ${subject}" "${MAIL_TO}"; then
         log "WARNING: failed to send notification email (subject: ${subject})"
     fi
-}
+)
 
 fail() {
     local msg="$1"
@@ -127,7 +142,7 @@ EOF
     exit 1
 }
 
-on_unexpected_error() {
+on_unexpected_error() (
     local line="$1"
     local cmd="$2"
     log "ERROR: unexpected failure at line ${line}: '${cmd}'"
@@ -144,8 +159,8 @@ $(tail -n 40 "${LOG_FILE}" 2>/dev/null || echo '(no log yet)')
 EOF
 )"
     send_email "FAILED -- unexpected error" "${body}"
-}
-trap 'on_unexpected_error "${LINENO}" "${BASH_COMMAND}"' ERR
+)
+trap 'on_unexpected_error "${LINENO}" "${BASH_COMMAND}"; true' ERR
 
 if [[ ! -x "${RESTIC_BIN}" ]]; then
     fail "restic binary not found. Install it first -- see README.md"
@@ -153,6 +168,10 @@ fi
 
 if [[ ! -d "${BACKUP_SOURCE}" ]]; then
     fail "backup source ${BACKUP_SOURCE} does not exist"
+fi
+
+if [[ "${BACKUP_SOURCE}" == "${LOCAL_REPO}"* ]] || [[ "${LOCAL_REPO}" == "${BACKUP_SOURCE}"* ]]; then
+    log "WARNING: BACKUP_SOURCE (${BACKUP_SOURCE}) and LOCAL_REPO (${LOCAL_REPO}) overlap -- this can cause unbounded repository growth. Add the repo path to your exclude file."
 fi
 
 if [[ ! -f "${LOCAL_PASSWORD_FILE}" ]]; then
@@ -166,6 +185,8 @@ fi
 if [[ ! "${KEEP_DAILY}" =~ ^[1-9][0-9]*$ ]]; then
     fail "KEEP_DAILY must be a positive integer, got: '${KEEP_DAILY}'"
 fi
+
+assert_safe_password_file "${LOCAL_PASSWORD_FILE}" "local"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
 mkdir -p "${LOCAL_REPO}"
@@ -187,6 +208,11 @@ module_local_backup() (
     set +e
     log "--- [local] Backing up ${BACKUP_SOURCE} to ${LOCAL_REPO} ---"
 
+    if [[ ! -d "${LOCAL_REPO}" ]]; then
+        log "[local] ERROR: repository directory ${LOCAL_REPO} does not exist"
+        return 1
+    fi
+
     if ! "${RESTIC_BIN}" snapshots >/dev/null 2>&1; then
         log "[local] Repository not initialized (or unreadable) -- initializing at ${LOCAL_REPO}"
         if ! "${RESTIC_BIN}" init 2>&1 | tee -a "${LOG_FILE}"; then
@@ -195,32 +221,40 @@ module_local_backup() (
         fi
     fi
 
-    if ! "${RESTIC_BIN}" backup "${BACKUP_SOURCE}" \
+    local backup_rc
+    "${RESTIC_BIN}" backup "${BACKUP_SOURCE}" \
         --one-file-system \
         --exclude-file="${EXCLUDE_FILE}" \
         --tag "${RESTIC_TAG}" \
         --host "${RESTIC_HOST}" \
-        2>&1 | tee -a "${LOG_FILE}"; then
-        log "[local] ERROR: restic backup failed"
+        2>&1 | tee -a "${LOG_FILE}"
+    backup_rc=${PIPESTATUS[0]}
+
+    if [[ ${backup_rc} -ne 0 ]]; then
+        log "[local] ERROR: restic backup failed (exit ${backup_rc})"
         return 1
     fi
     log "[local] Backup complete."
 
     log "[local] Applying retention policy (keep last ${KEEP_DAILY} daily snapshots) ..."
-    if ! "${RESTIC_BIN}" forget \
+    local forget_rc
+    "${RESTIC_BIN}" forget \
         --tag "${RESTIC_TAG}" \
         --host "${RESTIC_HOST}" \
         --keep-daily "${KEEP_DAILY}" \
         --prune \
-        2>&1 | tee -a "${LOG_FILE}"; then
-        log "[local] ERROR: retention/prune failed"
+        2>&1 | tee -a "${LOG_FILE}"
+    forget_rc=${PIPESTATUS[0]}
+
+    if [[ ${forget_rc} -ne 0 ]]; then
+        log "[local] ERROR: retention/prune failed (exit ${forget_rc})"
         return 1
     fi
     log "[local] Retention/prune complete."
     return 0
 )
 
-module_copy_target() (
+module_copy_target() {
     set +e
     local name="$1"
 
@@ -229,7 +263,8 @@ module_copy_target() (
         return 1
     fi
 
-    local upper="${name^^}"
+    local upper
+    upper="$(printf '%s' "${name}" | tr 'a-z' 'A-Z')"
     local type_var="TARGET_${upper}_TYPE"
     local repo_var="TARGET_${upper}_REPO"
     local pass_var="TARGET_${upper}_PASSWORD_FILE"
@@ -254,11 +289,12 @@ module_copy_target() (
         return 1
     fi
 
+    assert_safe_password_file "${password_file}" "${name}"
+
     case "${type}" in
         path)
-            if [[ -n "${mountpoint}" ]] && ! mountpoint -q "${mountpoint}"; then
-                log "[${name}] ERROR: ${mountpoint} is not mounted"
-                return 1
+            if [[ -n "${mountpoint}" ]] && ! { command -v mountpoint >/dev/null 2>&1 && mountpoint -q "${mountpoint}"; }; then
+                log "[${name}] WARNING: mountpoint binary not available or ${mountpoint} not mounted -- proceeding anyway"
             fi
             ;;
         s3)
@@ -270,7 +306,6 @@ module_copy_target() (
                 log "[${name}] ERROR: credentials file missing: ${env_file}"
                 return 1
             fi
-            local reason
             if ! reason="$(assert_safe_to_source "${env_file}")"; then
                 log "[${name}] ERROR: ${env_file} ${reason}"
                 return 1
@@ -291,7 +326,10 @@ module_copy_target() (
             ;;
     esac
 
-    if ! "${RESTIC_BIN}" -r "${repo}" --password-file "${password_file}" snapshots >/dev/null 2>&1; then
+    local snap_rc
+    "${RESTIC_BIN}" -r "${repo}" --password-file "${password_file}" snapshots >/dev/null 2>&1
+    snap_rc=$?
+    if [[ ${snap_rc} -ne 0 ]]; then
         log "[${name}] Repository not initialized -- initializing at ${repo}"
         if ! "${RESTIC_BIN}" -r "${repo}" --password-file "${password_file}" init 2>&1 | tee -a "${LOG_FILE}"; then
             log "[${name}] ERROR: repo init failed"
@@ -299,31 +337,39 @@ module_copy_target() (
         fi
     fi
 
-    if ! "${RESTIC_BIN}" copy \
+    local copy_rc
+    "${RESTIC_BIN}" copy \
         --from-repo "${LOCAL_REPO}" \
         --from-password-file "${LOCAL_PASSWORD_FILE}" \
         -r "${repo}" \
         --password-file "${password_file}" \
         --tag "${RESTIC_TAG}" \
-        2>&1 | tee -a "${LOG_FILE}"; then
-        log "[${name}] ERROR: copy failed"
+        2>&1 | tee -a "${LOG_FILE}"
+    copy_rc=${PIPESTATUS[0]}
+
+    if [[ ${copy_rc} -ne 0 ]]; then
+        log "[${name}] ERROR: copy failed (exit ${copy_rc})"
         return 1
     fi
     log "[${name}] Copy complete."
 
     log "[${name}] Applying retention policy (keep last ${KEEP_DAILY} daily snapshots) ..."
-    if ! "${RESTIC_BIN}" -r "${repo}" --password-file "${password_file}" forget \
+    local forget_rc
+    "${RESTIC_BIN}" -r "${repo}" --password-file "${password_file}" forget \
         --tag "${RESTIC_TAG}" \
         --host "${RESTIC_HOST}" \
         --keep-daily "${KEEP_DAILY}" \
         --prune \
-        2>&1 | tee -a "${LOG_FILE}"; then
-        log "[${name}] ERROR: retention/prune failed"
+        2>&1 | tee -a "${LOG_FILE}"
+    forget_rc=${PIPESTATUS[0]}
+
+    if [[ ${forget_rc} -ne 0 ]]; then
+        log "[${name}] ERROR: retention/prune failed (exit ${forget_rc})"
         return 1
     fi
     log "[${name}] Retention/prune complete."
     return 0
-)
+}
 
 module_integrity_check() (
     set +e
