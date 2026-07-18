@@ -23,6 +23,7 @@ Requirements
 *   Root privileges to run the script (needed to preserve file ownership, ACLs, and extended attributes on the backup source)
 *   _Optional, for failure emails:_ a `mail`\-providing package (e.g. `mailutils` on Debian/Ubuntu) and a working local mail transport agent such as `postfix` configured to relay outbound mail. Setting up mail delivery itself is outside the scope of this script -- there are plenty of good guides for configuring postfix as a relay-only MTA; search for "postfix satellite system" or your distro's mail-server documentation. This script just calls `mail` if `MAIL_TO` is set and the binary exists; if mail isn't configured, it logs a warning and continues normally.
 *   _Optional, for S3-compatible targets:_ an account and bucket with your provider of choice (Backblaze B2, AWS S3, MinIO, etc.) and an access key/secret pair. See restic's own [S3 backend documentation](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html#amazon-s3) and your provider's key-management docs for the specifics -- this script only consumes the resulting credentials, it doesn't walk you through creating them.
+*   S3 bucket name cannot have spaces in them as of now.
 
 Quick start
 -----------
